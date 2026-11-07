@@ -122,7 +122,7 @@
   </div>
 
   <script>
-    // GitHub API Integration Module
+    // GitHub API Integration Module with robust SHA check
     const GitHubSync = {
       getConfig() {
         return {
@@ -132,8 +132,6 @@
           token: localStorage.getItem('gh_token') || ''
         };
       },
-
-      shaMap: {},
 
       async fetchFile(path) {
         const config = this.getConfig();
@@ -146,20 +144,39 @@
         });
         if (!res.ok) throw new Error(`Fetch failed (${res.status}): ${res.statusText}`);
         const data = await res.json();
-        this.shaMap[path] = data.sha;
         return decodeURIComponent(escape(atob(data.content)));
       },
 
       async commitFile(path, content, message) {
         const config = this.getConfig();
         const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${path}`;
+        
+        // Always fetch the latest SHA right before committing to prevent mismatch errors
+        let currentSha = '';
+        try {
+          const getRes = await fetch(`${url}?ref=${config.branch}`, {
+            headers: {
+              'Authorization': `Bearer ${config.token}`,
+              'Accept': 'application/vnd.github.v3+json'
+            }
+          });
+          if (getRes.ok) {
+            const fileData = await getRes.json();
+            currentSha = fileData.sha;
+          }
+        } catch (e) {
+          console.log('File might not exist yet, proceeding without SHA.');
+        }
+
         const base64Content = btoa(unescape(encodeURIComponent(content)));
         const payload = {
           message: message,
           content: base64Content,
           branch: config.branch
         };
-        if (this.shaMap[path]) payload.sha = this.shaMap[path];
+        if (currentSha) {
+          payload.sha = currentSha;
+        }
 
         const res = await fetch(url, {
           method: 'PUT',
@@ -170,96 +187,7 @@
           },
           body: JSON.stringify(payload)
         });
+
         if (!res.ok) {
           const err = await res.json();
-          throw new Error(err.message);
-        }
-        const data = await res.json();
-        this.shaMap[path] = data.content.sha;
-        return data;
-      }
-    };
-
-    // UI Helpers
-    function switchTab(tabId) {
-      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-      document.getElementById('tab-' + tabId).classList.add('active');
-    }
-
-    function showStatus(elementId, text, isSuccess) {
-      const el = document.getElementById(elementId);
-      el.className = 'status ' + (isSuccess ? 'success' : 'error');
-      el.innerText = text;
-    }
-
-    function saveGitHubSettings() {
-      localStorage.setItem('gh_owner', document.getElementById('ghOwner').value.trim());
-      localStorage.setItem('gh_repo', document.getElementById('ghRepo').value.trim());
-      localStorage.setItem('gh_branch', document.getElementById('ghBranch').value.trim());
-      localStorage.setItem('gh_token', document.getElementById('ghToken').value.trim());
-      showStatus('githubStatus', 'Settings saved to local browser storage!', true);
-    }
-
-    function loadSavedSettings() {
-      document.getElementById('ghOwner').value = localStorage.getItem('gh_owner') || '';
-      document.getElementById('ghRepo').value = localStorage.getItem('gh_repo') || 'coc-tracker';
-      document.getElementById('ghBranch').value = localStorage.getItem('gh_branch') || 'main';
-      document.getElementById('ghToken').value = localStorage.getItem('gh_token') || '';
-    }
-
-    async function syncFromGitHub() {
-      try {
-        const baseJson = await GitHubSync.fetchFile('data/base_info.json');
-        const maxCsv = await GitHubSync.fetchFile('data/max_levels.csv');
-        document.getElementById('baseJsonInput').value = baseJson;
-        document.getElementById('maxCsvInput').value = maxCsv;
-        showStatus('githubStatus', 'Successfully fetched base_info.json and max_levels.csv from GitHub!', true);
-      } catch (err) {
-        showStatus('githubStatus', 'Error fetching files: ' + err.message, false);
-      }
-    }
-
-    async function commitBaseToGitHub() {
-      const content = document.getElementById('baseJsonInput').value;
-      try {
-        await GitHubSync.commitFile('data/base_info.json', content, 'Update base_info.json via App');
-        showStatus('baseStatus', 'Committed base_info.json to GitHub successfully!', true);
-      } catch (err) {
-        showStatus('baseStatus', 'Commit failed: ' + err.message, false);
-      }
-    }
-
-    async function commitMaxToGitHub() {
-      const content = document.getElementById('maxCsvInput').value;
-      try {
-        await GitHubSync.commitFile('data/max_levels.csv', content, 'Update max_levels.csv via App');
-        showStatus('maxStatus', 'Committed max_levels.csv to GitHub successfully!', true);
-      } catch (err) {
-        showStatus('maxStatus', 'Commit failed: ' + err.message, false);
-      }
-    }
-
-    function calculatePlan() {
-      const container = document.getElementById('planResults');
-      const cutoff = new Date(document.getElementById('eventCutoff').value);
-      const now = new Date();
-
-      if (now < cutoff) {
-        container.innerHTML = `
-          <div class="status success">
-            <strong>Event Active!</strong> 50% discount applies to any upgrade started before ${cutoff.toUTCString()}.
-          </div>
-          <p>Builder 1 will finish current upgrade in ${document.getElementById('b1Hours').value || 0} hours. Start next upgrade immediately prior to cutoff to lock in the 50% time reduction.</p>
-        `;
-      } else {
-        container.innerHTML = `<div class="status error">The selected event has ended. Standard upgrade times apply.</div>`;
-      }
-    }
-
-    // Init on page load
-    window.onload = function() {
-      loadSavedSettings();
-    };
-  </script>
-</body>
-</html>
+          throw new Error(
