@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CoC Builder & Event Tracker (GitHub Sync)</title>
+  <style>
+    :root { --bg: #121214; --card: #1e1e24; --accent: #f59e0b; --text: #e2e8f0; --border: #334155; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1, h2 { color: var(--accent); }
+    .card { background: var(--card); border: 1px solid var(--border); padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+    .nav { display: flex; gap: 10px; margin-bottom: 20px; }
+    button { background: var(--accent); color: #000; border: none; padding: 10px 16px; font-weight: bold; border-radius: 6px; cursor: pointer; }
+    button:hover { opacity: 0.9; }
+    button.secondary { background: #475569; color: #fff; }
+    textarea, input { width: 100%; background: #0f172a; border: 1px solid var(--border); color: #fff; padding: 10px; border-radius: 6px; box-sizing: border-box; font-family: monospace; }
+    textarea { height: 180px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .status { padding: 10px; margin-top: 10px; border-radius: 6px; font-weight: bold; }
+    .status.success { background: #14532d; color: #86efac; }
+    .status.error { background: #7f1d1d; color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Clash of Clans Event & Builder Planner</h1>
+    
+    <!-- Navigation Tabs -->
+    <div class="nav">
+      <button onclick="switchTab('github')">1. GitHub Credentials</button>
+      <button onclick="switchTab('base')">2. Base Info (JSON)</button>
+      <button onclick="switchTab('max')">3. Max Levels (CSV)</button>
+      <button onclick="switchTab('events')">4. Events & Upgrades</button>
+    </div>
+
+    <!-- TAB 1: GitHub Settings -->
+    <div id="tab-github" class="tab-content active card">
+      <h2>GitHub Connection Settings</h2>
+      <div class="grid">
+        <div>
+          <label>GitHub Username / Owner</label>
+          <input type="text" id="ghOwner" placeholder="e.g. your-username">
+        </div>
+        <div>
+          <label>Repository Name</label>
+          <input type="text" id="ghRepo" value="coc-tracker">
+        </div>
+      </div>
+      <br>
+      <div class="grid">
+        <div>
+          <label>Branch</label>
+          <input type="text" id="ghBranch" value="main">
+        </div>
+        <div>
+          <label>Personal Access Token (PAT)</label>
+          <input type="password" id="ghToken" placeholder="github_pat_...">
+        </div>
+      </div>
+      <br>
+      <button onclick="saveGitHubSettings()">Save Settings</button>
+      <button class="secondary" onclick="syncFromGitHub()">Fetch Data from GitHub</button>
+      <div id="githubStatus"></div>
+    </div>
+
+    <!-- TAB 2: Base Info JSON -->
+    <div id="tab-base" class="tab-content card">
+      <h2>Base Info (JSON)</h2>
+      <p>Edit your current building levels below:</p>
+      <textarea id="baseJsonInput"></textarea>
+      <br><br>
+      <button onclick="commitBaseToGitHub()">Commit & Save to GitHub</button>
+      <div id="baseStatus"></div>
+    </div>
+
+    <!-- TAB 3: Max Levels CSV -->
+    <div id="tab-max" class="tab-content card">
+      <h2>Max Building Levels (CSV)</h2>
+      <p>Edit max building targets, cost, and time (in hours):</p>
+      <textarea id="maxCsvInput"></textarea>
+      <br><br>
+      <button onclick="commitMaxToGitHub()">Commit & Save to GitHub</button>
+      <div id="maxStatus"></div>
+    </div>
+
+    <!-- TAB 4: Events & Upgrades -->
+    <div id="tab-events" class="tab-content card">
+      <h2>Hammer Jam & Event Calculation</h2>
+      <div class="grid">
+        <div>
+          <label>Active Event</label>
+          <select id="eventSelect" style="width:100%; padding:10px; background:#0f172a; color:#fff; border:1px solid var(--border); border-radius:6px;">
+            <option value="hammer_jam">Hammer Jam (50% Time & Cost Discount)</option>
+            <option value="summer_jam">Summer Jam (50% Time & Cost Discount)</option>
+          </select>
+        </div>
+        <div>
+          <label>Event Cutoff Time (UTC)</label>
+          <input type="text" id="eventCutoff" value="2026-11-15T13:30:00Z">
+        </div>
+      </div>
+      <br>
+      <h3>Active Builder Status</h3>
+      <div class="grid">
+        <div>
+          <label>Builder 1 Upgrading</label>
+          <input type="text" id="b1Name" placeholder="Building Name">
+        </div>
+        <div>
+          <label>Hours Remaining</label>
+          <input type="number" id="b1Hours" placeholder="e.g. 12">
+        </div>
+      </div>
+      <br>
+      <button onclick="calculatePlan()">Calculate Optimal Upgrades</button>
+      
+      <div id="planResults" style="margin-top: 20px;"></div>
+    </div>
+  </div>
+
+  <script>
+    // GitHub API Integration Module
+    const GitHubSync = {
+      getConfig() {
+        return {
+          owner: localStorage.getItem('gh_owner') || '',
+          repo: localStorage.getItem('gh_repo') || 'coc-tracker',
+          branch: localStorage.getItem('gh_branch') || 'main',
+          token: localStorage.getItem('gh_token') || ''
+        };
+      },
+
+      shaMap: {},
+
+      async fetchFile(path) {
+        const config = this.getConfig();
+        const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${path}?ref=${config.branch}`;
+        const res = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${config.token}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        });
+        if (!res.ok) throw new Error(`Fetch failed (${res.status}): ${res.statusText}`);
+        const data = await res.json();
+        this.shaMap[path] = data.sha;
+        return decodeURIComponent(escape(atob(data.content)));
+      },
+
+      async commitFile(path, content, message) {
+        const config = this.getConfig();
+        const url = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${path}`;
+        const base64Content = btoa(unescape(encodeURIComponent(content)));
+        const payload = {
+          message: message,
+          content: base64Content,
+          branch: config.branch
+        };
+        if (this.shaMap[path]) payload.sha = this.shaMap[path];
+
+        const res = await fetch(url, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${config.token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.github.v3+json'
+          },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.message);
+        }
+        const data = await res.json();
+        this.shaMap[path] = data.content.sha;
+        return data;
+      }
+    };
+
+    // UI Helpers
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.getElementById('tab-' + tabId).classList.add('active');
+    }
+
+    function showStatus(elementId, text, isSuccess) {
+      const el = document.getElementById(elementId);
+      el.className = 'status ' + (isSuccess ? 'success' : 'error');
+      el.innerText = text;
+    }
+
+    function saveGitHubSettings() {
+      localStorage.setItem('gh_owner', document.getElementById('ghOwner').value.trim());
+      localStorage.setItem('gh_repo', document.getElementById('ghRepo').value.trim());
+      localStorage.setItem('gh_branch', document.getElementById('ghBranch').value.trim());
+      localStorage.setItem('gh_token', document.getElementById('ghToken').value.trim());
+      showStatus('githubStatus', 'Settings saved to local browser storage!', true);
+    }
+
+    function loadSavedSettings() {
+      document.getElementById('ghOwner').value = localStorage.getItem('gh_owner') || '';
+      document.getElementById('ghRepo').value = localStorage.getItem('gh_repo') || 'coc-tracker';
+      document.getElementById('ghBranch').value = localStorage.getItem('gh_branch') || 'main';
+      document.getElementById('ghToken').value = localStorage.getItem('gh_token') || '';
+    }
+
+    async function syncFromGitHub() {
+      try {
+        const baseJson = await GitHubSync.fetchFile('data/base_info.json');
+        const maxCsv = await GitHubSync.fetchFile('data/max_levels.csv');
+        document.getElementById('baseJsonInput').value = baseJson;
+        document.getElementById('maxCsvInput').value = maxCsv;
+        showStatus('githubStatus', 'Successfully fetched base_info.json and max_levels.csv from GitHub!', true);
+      } catch (err) {
+        showStatus('githubStatus', 'Error fetching files: ' + err.message, false);
+      }
+    }
+
+    async function commitBaseToGitHub() {
+      const content = document.getElementById('baseJsonInput').value;
+      try {
+        await GitHubSync.commitFile('data/base_info.json', content, 'Update base_info.json via App');
+        showStatus('baseStatus', 'Committed base_info.json to GitHub successfully!', true);
+      } catch (err) {
+        showStatus('baseStatus', 'Commit failed: ' + err.message, false);
+      }
+    }
+
+    async function commitMaxToGitHub() {
+      const content = document.getElementById('maxCsvInput').value;
+      try {
+        await GitHubSync.commitFile('data/max_levels.csv', content, 'Update max_levels.csv via App');
+        showStatus('maxStatus', 'Committed max_levels.csv to GitHub successfully!', true);
+      } catch (err) {
+        showStatus('maxStatus', 'Commit failed: ' + err.message, false);
+      }
+    }
+
+    function calculatePlan() {
+      const container = document.getElementById('planResults');
+      const cutoff = new Date(document.getElementById('eventCutoff').value);
+      const now = new Date();
+
+      if (now < cutoff) {
+        container.innerHTML = `
+          <div class="status success">
+            <strong>Event Active!</strong> 50% discount applies to any upgrade started before ${cutoff.toUTCString()}.
+          </div>
+          <p>Builder 1 will finish current upgrade in ${document.getElementById('b1Hours').value || 0} hours. Start next upgrade immediately prior to cutoff to lock in the 50% time reduction.</p>
+        `;
+      } else {
+        container.innerHTML = `<div class="status error">The selected event has ended. Standard upgrade times apply.</div>`;
+      }
+    }
+
+    // Init on page load
+    window.onload = function() {
+      loadSavedSettings();
+    };
+  </script>
+</body>
+</html>
